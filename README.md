@@ -149,7 +149,7 @@ drivers\YTUSB2300.zip
 推荐直接双击发行版本：
 
 ```text
-release\stick88_v1.1.0.exe
+release\stick88_v1.1.3.exe
 ```
 
 开发时也可以在 `stick88` 文件夹打开 PowerShell 后运行源码：
@@ -165,7 +165,7 @@ python -u .\src\stick88_scope_app.py
 1. 打开 GUI。
 2. 选择保存位置。
 3. 勾选需要保存的通道。
-4. 设置保存数据长度比例。
+4. 选择数据换算协议；需要新增或修改协议时点击“管理”。
 5. 在 Markdown 文本区填写实验说明。
 6. 点击“保存数据并绘图”。
 7. 等待状态显示“数据已保存完毕”。
@@ -210,11 +210,17 @@ stick88
 │  ├─ tmctl8020.zip
 │  └─ YTUSB2300.zip
 ├─ build_specs
-│  └─ stick88_v1.1.0.spec
+│  ├─ stick88_v1.1.0.spec
+│  ├─ stick88_v1.1.1.spec
+│  ├─ stick88_v1.1.2.spec
+│  └─ stick88_v1.1.3.spec
 ├─ release
 │  ├─ stick88_v1.0.0.exe
 │  ├─ stick88_v1.0.1.exe
 │  ├─ stick88_v1.1.0.exe
+│  ├─ stick88_v1.1.1.exe
+│  ├─ stick88_v1.1.2.exe
+│  ├─ stick88_v1.1.3.exe
 │  └─ stick88_settings.json
 └─ README.md
 ```
@@ -227,11 +233,38 @@ stick88
 - `build_specs`：PyInstaller 构建配置。
 - `release`：可直接运行和对外发布的版本。
 
-在 `build_specs` 目录下重新构建 v1.1.0：
+在 `build_specs` 目录下重新构建 v1.1.3：
 
 ```powershell
-python -m PyInstaller --noconfirm --clean .\stick88_v1.1.0.spec
+python -m PyInstaller --noconfirm --clean .\stick88_v1.1.3.spec
 ```
+
+## 数据换算协议
+
+v1.1.1 可以在 GUI 中选择和管理数据换算协议。协议保存在
+`release\stick88_settings.json`，每个通道包含数据名称、换算系数、
+偏置、单位和显示刻度。
+
+统一换算公式为：
+
+```text
+物理量 = (通道数值 - 偏置) × 换算系数
+```
+
+换算系数和偏置允许使用数字、括号以及 `+ - * / // % **` 运算符。
+例如角度误差的偏置为 `1.25`，换算系数为 `10/0.5`，则 1.25 V
+对应 0°，0.75 V 对应 -10°，1.75 V 对应 10°。
+
+协议名称、数据名称和单位均为纯文本，最长 15 个字符。GUI 中可通过
+“管理”按钮新增、修改或删除协议。CSV 会同时保存原始通道数值和
+协议换算后的物理量，并记录本次使用的协议参数。
+
+显示刻度使用数组填写，数值单位为换算后的物理量单位，每个通道最多
+5 个刻度。例如角度误差可填写 `[-10, 10, 0]`，电角度可填写
+`[0, 360]`。绘图时 CH1、CH2 的彩色刻度显示在左侧，CH3、CH4
+显示在右侧；CH2 和 CH4 靠近图框，CH1 和 CH3 位于外侧。刻度只
+显示数值，不重复显示单位；左侧文字逆时针旋转 90°，右侧文字顺时针
+旋转 90°。上方四路说明采用单行横向排列。
 
 `drivers` 中当前包含：
 

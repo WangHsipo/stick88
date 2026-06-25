@@ -1,10 +1,13 @@
 import csv
+import json
 import os
 import sys
 import time
 from ctypes import WinDLL, byref, c_char_p, c_int, create_string_buffer
 from datetime import datetime
 from pathlib import Path
+
+from protocol_utils import apply_conversion, csv_identifier, normalize_protocol
 
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -223,7 +226,16 @@ def get_channel_settings(dll, device_id, channel):
     }
 
 
-def save_channel_csv(dll, device_id, output_folder, channel, idn, max_points=None, save_percent=100):
+def save_channel_csv(
+    dll,
+    device_id,
+    output_folder,
+    channel,
+    idn,
+    max_points=None,
+    save_percent=100,
+    protocol=None,
+):
     print(f"Saving CH{channel}...", flush=True)
     send(dll, device_id, f":WAVEFORM:TRACE {channel}")
     send(dll, device_id, ":WAVEFORM:RECORD 0")
@@ -252,21 +264,46 @@ def save_channel_csv(dll, device_id, output_folder, channel, idn, max_points=Non
             for value in values
         ]
 
+    protocol_channel = protocol.get("channels", {}).get(str(channel)) if protocol else None
+    if protocol_channel:
+        converted_values = [apply_conversion(value, protocol_channel) for value in values]
+        plot_unit = protocol_channel["unit"]
+        plot_quantity = protocol_channel["data_name"]
+        plot_vdiv = abs(protocol_channel["gain_value"]) * channel_settings["vdiv"]
+        plot_offset = apply_conversion(channel_settings["offset"], protocol_channel)
+        plot_zero = apply_conversion(channel_settings["display_zero"], protocol_channel)
+    else:
+        converted_values = None
+        plot_unit = channel_settings["display_unit"]
+        plot_quantity = channel_settings["quantity"]
+        plot_vdiv = channel_settings["vdiv"]
+        plot_offset = channel_settings["offset"]
+        plot_zero = channel_settings["display_zero"]
+
     csv_path = output_folder / f"CH{channel}.csv"
-    value_column = f"{channel_settings['quantity']}_{unit_for_csv(channel_settings['display_unit'])}"
+    raw_value_column = f"{channel_settings['quantity']}_{unit_for_csv(channel_settings['display_unit'])}"
+    converted_value_column = (
+        f"{csv_identifier(protocol_channel['data_name'])}_{unit_for_csv(protocol_channel['unit'])}"
+        if protocol_channel
+        else None
+    )
     with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(["instrument", idn])
         writer.writerow(["channel", f"CH{channel}"])
-        writer.writerow(["quantity", channel_settings["quantity"]])
-        writer.writerow(["display_unit", channel_settings["display_unit"]])
-        writer.writerow(["vertical_scale_per_div", channel_settings["vdiv"]])
-        writer.writerow(["vertical_scale_unit", channel_settings["display_unit"]])
-        writer.writerow(["vertical_offset", channel_settings["offset"]])
-        writer.writerow(["vertical_offset_unit", channel_settings["display_unit"]])
+        writer.writerow(["quantity", plot_quantity])
+        writer.writerow(["display_unit", plot_unit])
+        writer.writerow(["vertical_scale_per_div", plot_vdiv])
+        writer.writerow(["vertical_scale_unit", plot_unit])
+        writer.writerow(["vertical_offset", plot_offset])
+        writer.writerow(["vertical_offset_unit", plot_unit])
         writer.writerow(["vertical_position_div", channel_settings["position_div"]])
         writer.writerow(["vertical_position_unit", "div"])
-        writer.writerow(["display_zero_value", channel_settings["display_zero"]])
+        writer.writerow(["display_zero_value", plot_zero])
+        writer.writerow(["source_quantity", channel_settings["quantity"]])
+        writer.writerow(["source_display_unit", channel_settings["display_unit"]])
+        writer.writerow(["source_vertical_scale_per_div", channel_settings["vdiv"]])
+        writer.writerow(["source_vertical_offset", channel_settings["offset"]])
         writer.writerow(["raw_vertical_scale_per_div", channel_settings["raw_vdiv"]])
         writer.writerow(["raw_vertical_offset", channel_settings["raw_offset"]])
         writer.writerow(["probe_mode", channel_settings["probe_mode"]])
@@ -281,17 +318,44 @@ def save_channel_csv(dll, device_id, output_folder, channel, idn, max_points=Non
         writer.writerow(["display_duration_s", record_length / sample_rate])
         writer.writerow(["seconds_per_div", record_length / sample_rate / 10])
         writer.writerow(["trigger_point_index", trigger_point])
+        writer.writerow(["protocol_enabled", int(protocol_channel is not None)])
+        writer.writerow(["protocol_name", protocol["name"] if protocol_channel else ""])
+        writer.writerow(["protocol_data_name", protocol_channel["data_name"] if protocol_channel else ""])
+        writer.writerow(["protocol_gain_expression", protocol_channel["gain"] if protocol_channel else ""])
+        writer.writerow(["protocol_gain_value", protocol_channel["gain_value"] if protocol_channel else ""])
+        writer.writerow(["protocol_bias_expression", protocol_channel["bias"] if protocol_channel else ""])
+        writer.writerow(["protocol_bias_value", protocol_channel["bias_value"] if protocol_channel else ""])
+        writer.writerow(["protocol_unit", protocol_channel["unit"] if protocol_channel else ""])
+        writer.writerow([
+            "protocol_display_ticks",
+            json.dumps(protocol_channel["display_ticks_values"], ensure_ascii=False) if protocol_channel else "[]",
+        ])
+        writer.writerow(["plot_value_column", converted_value_column or raw_value_column])
         writer.writerow([])
-        writer.writerow(["index", "time_s", value_column])
+        header = ["index", "time_s", raw_value_column]
+        if converted_value_column:
+            header.append(converted_value_column)
+        writer.writerow(header)
         for index, value in enumerate(values):
             time_s = (index - trigger_point) / sample_rate
-            writer.writerow([index, time_s, value])
+            row = [index, time_s, value]
+            if converted_values is not None:
+                row.append(converted_values[index])
+            writer.writerow(row)
 
     return csv_path, len(values)
 
 
-def save_waveforms(tmctl_dir=TMCTL_DIR, output_root=OUTPUT_ROOT, channels=None, max_points=None, save_percent=100):
+def save_waveforms(
+    tmctl_dir=TMCTL_DIR,
+    output_root=OUTPUT_ROOT,
+    channels=None,
+    max_points=None,
+    save_percent=100,
+    protocol=None,
+):
     channels = CHANNELS if channels is None else channels
+    protocol = normalize_protocol(protocol) if protocol else None
     output_root = Path(output_root)
     dll = load_tmctl(tmctl_dir)
     address = search_address(dll)
@@ -324,6 +388,7 @@ def save_waveforms(tmctl_dir=TMCTL_DIR, output_root=OUTPUT_ROOT, channels=None, 
                 idn,
                 max_points=max_points,
                 save_percent=save_percent,
+                protocol=protocol,
             )
             print(f"Saved CH{channel}: {saved_points} points -> {csv_path}", flush=True)
 

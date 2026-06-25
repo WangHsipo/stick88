@@ -1,4 +1,5 @@
 import csv
+import json
 import math
 import struct
 import sys
@@ -9,11 +10,11 @@ from pathlib import Path
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 OUTPUT_ROOT = APP_DIR / "waveforms"
 MAX_BINS_PER_CHANNEL = 900
-PLOT_WIDTH = 960
-PLOT_HEIGHT = 520
-TOP = 76
-LEFT = 64
-RIGHT = 28
+PLOT_WIDTH = 800
+PLOT_HEIGHT = 486
+TOP = 72
+LEFT = 90
+RIGHT = 90
 BOTTOM = 42
 VERTICAL_DIVS = 8
 HORIZONTAL_DIVS = 10
@@ -81,21 +82,27 @@ def saved_channels(folder):
 def read_metadata(csv_path):
     metadata = {}
     value_column = "value"
+    value_index = 2
     with csv_path.open("r", newline="", encoding="utf-8-sig") as f:
         reader = csv.reader(f)
         for row in reader:
             if not row:
                 continue
             if row[0] == "index":
-                value_column = row[2]
+                requested_column = metadata.get("plot_value_column", "")
+                if requested_column and requested_column in row:
+                    value_index = row.index(requested_column)
+                else:
+                    value_index = 2
+                value_column = row[value_index]
                 break
             if len(row) >= 2:
                 metadata[row[0]] = row[1]
-    return metadata, value_column
+    return metadata, value_column, value_index
 
 
 def waveform_envelope(csv_path, max_bins=MAX_BINS_PER_CHANNEL):
-    metadata, value_column = read_metadata(csv_path)
+    metadata, value_column, value_index = read_metadata(csv_path)
     saved_points = int(float(metadata.get("saved_points", "0") or "0"))
     bins = max(1, min(max_bins, saved_points or max_bins))
     y_min = [math.inf] * bins
@@ -115,7 +122,9 @@ def waveform_envelope(csv_path, max_bins=MAX_BINS_PER_CHANNEL):
                 continue
             if not data_started:
                 continue
-            value = float(row[2])
+            if len(row) <= value_index:
+                continue
+            value = float(row[value_index])
             bin_index = min(bins - 1, int(row_index * bins / max(1, saved_points)))
             y_min[bin_index] = min(y_min[bin_index], value)
             y_max[bin_index] = max(y_max[bin_index], value)
@@ -181,7 +190,94 @@ def draw_text(img, width, height, x, y, text, color=(35, 35, 35), scale=2):
         cursor += (len(glyph[0]) + 1) * scale
 
 
-def write_png(path, width, height, pixels):
+def write_png(path, width, height, pixels, text_overlays=None):
+    if text_overlays:
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+
+            image = Image.frombytes("RGB", (width, height), bytes(pixels))
+            draw = ImageDraw.Draw(image)
+            chinese_font_path = Path("C:/Windows/Fonts/simfang.ttf")
+            english_font_path = Path("C:/Windows/Fonts/times.ttf")
+            fallback_font_path = Path("C:/Windows/Fonts/arial.ttf")
+
+            def load_font(kind, size):
+                preferred = chinese_font_path if kind == "cn" else english_font_path
+                font_path = preferred if preferred.exists() else fallback_font_path
+                return ImageFont.truetype(str(font_path), size) if font_path.exists() else ImageFont.load_default()
+
+            def is_cjk(char):
+                return "\u3400" <= char <= "\u9fff"
+
+            def render_mixed_text(text, color, font_size):
+                fonts = {
+                    "cn": load_font("cn", font_size),
+                    "en": load_font("en", font_size),
+                }
+                widths = [
+                    max(1, int(math.ceil(draw.textlength(char, font=fonts["cn" if is_cjk(char) else "en"]))))
+                    for char in text
+                ]
+                metrics = [font.getmetrics() for font in fonts.values()]
+                max_ascent = max(ascent for ascent, _descent in metrics)
+                max_descent = max(descent for _ascent, descent in metrics)
+                baseline_y = 4 + max_ascent
+                text_image = Image.new(
+                    "RGBA",
+                    (max(1, sum(widths) + 8), max(1, max_ascent + max_descent + 8)),
+                    (255, 255, 255, 0),
+                )
+                text_draw = ImageDraw.Draw(text_image)
+                cursor = 4
+                for char, char_width in zip(text, widths):
+                    font = fonts["cn" if is_cjk(char) else "en"]
+                    text_draw.text((cursor, baseline_y), char, fill=(*color, 255), font=font, anchor="ls")
+                    cursor += char_width
+                bbox = text_image.getbbox()
+                return text_image.crop(bbox) if bbox else text_image
+
+            for overlay in text_overlays:
+                x, y, text, color = overlay[:4]
+                anchor = overlay[4] if len(overlay) >= 5 else None
+                angle = overlay[5] if len(overlay) >= 6 else 0
+                font_size = overlay[6] if len(overlay) >= 7 else 14
+                font_kind = overlay[7] if len(overlay) >= 8 else "en"
+                rotation_side = overlay[8] if len(overlay) >= 9 else None
+                font = load_font(font_kind, font_size)
+                if angle:
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = bbox[2] - bbox[0] + 8
+                    text_height = bbox[3] - bbox[1] + 8
+                    text_image = Image.new("RGBA", (text_width, text_height), (255, 255, 255, 0))
+                    text_draw = ImageDraw.Draw(text_image)
+                    text_draw.text((4 - bbox[0], 4 - bbox[1]), text, fill=(*color, 255), font=font)
+                    rotated = text_image.rotate(angle, expand=True, resample=Image.Resampling.BICUBIC)
+                    if rotation_side == "left":
+                        paste_x = int(round(x - 5 - rotated.width))
+                    elif rotation_side == "right":
+                        paste_x = int(round(x + 5))
+                    else:
+                        paste_x = int(round(x - rotated.width / 2))
+                    paste_y = int(round(y - rotated.height / 2))
+                    image.paste(rotated, (paste_x, paste_y), rotated)
+                else:
+                    text_image = render_mixed_text(text, color, font_size)
+                    paste_x = x
+                    paste_y = y
+                    if anchor and "m" in anchor:
+                        paste_x -= text_image.width / 2
+                    elif anchor and "r" in anchor:
+                        paste_x -= text_image.width
+                    if anchor and "b" in anchor:
+                        paste_y -= text_image.height
+                    elif anchor and "m" in anchor:
+                        paste_y -= text_image.height / 2
+                    image.paste(text_image, (int(round(paste_x)), int(round(paste_y))), text_image)
+            image.save(path, format="PNG", optimize=True)
+            return
+        except Exception:
+            pass
+
     raw = bytearray()
     stride = width * 3
     for y in range(height):
@@ -209,6 +305,13 @@ def channel_plot_info(channel, csv_path):
     position_text = metadata.get("vertical_position_div")
     display_zero_text = metadata.get("display_zero_value", "0")
     offset_text = metadata.get("vertical_offset")
+    try:
+        display_ticks = [
+            float(value)
+            for value in json.loads(metadata.get("protocol_display_ticks", "[]"))
+        ][:5]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        display_ticks = []
     try:
         scale_per_div = abs(float(scale_text))
     except (TypeError, ValueError):
@@ -249,6 +352,7 @@ def channel_plot_info(channel, csv_path):
         "position_div": position_div,
         "reference_value": reference_value,
         "position_source": position_source,
+        "display_ticks": display_ticks,
         "y_min": y_min,
         "y_max": y_max,
     }
@@ -287,10 +391,6 @@ def draw_channel_trace(img, image_width, image_height, plot_box, info):
     reference_value = info["reference_value"]
     trace = CHANNEL_COLORS.get(info["channel"], (230, 230, 230))
 
-    def y_to_pixel(value):
-        value_div = (value - reference_value) / scale_per_div
-        return int(round(plot_y0 + plot_h / 2 - (value_div + position_div) * pixels_per_div))
-
     previous_x = None
     previous_y = None
     bins = len(info["y_min"])
@@ -298,13 +398,55 @@ def draw_channel_trace(img, image_width, image_height, plot_box, info):
         if not math.isfinite(lo) or not math.isfinite(hi):
             continue
         x = int(plot_x0 + i * plot_w / max(1, bins - 1))
-        y_lo = max(plot_y0, min(plot_y1, y_to_pixel(lo)))
-        y_hi = max(plot_y0, min(plot_y1, y_to_pixel(hi)))
+        y_lo = max(plot_y0, min(plot_y1, value_to_pixel(info, plot_box, lo)))
+        y_hi = max(plot_y0, min(plot_y1, value_to_pixel(info, plot_box, hi)))
         draw_line(img, image_width, image_height, x, y_lo, x, y_hi, trace)
         mid_y = (y_lo + y_hi) // 2
         if previous_x is not None:
             draw_line(img, image_width, image_height, previous_x, previous_y, x, mid_y, trace)
         previous_x, previous_y = x, mid_y
+
+
+def value_to_pixel(info, plot_box, value):
+    _plot_x0, plot_y0, _plot_x1, plot_y1 = plot_box
+    plot_h = plot_y1 - plot_y0
+    pixels_per_div = plot_h / VERTICAL_DIVS
+    value_div = (value - info["reference_value"]) / info["scale_per_div"]
+    return int(round(plot_y0 + plot_h / 2 - (value_div + info["position_div"]) * pixels_per_div))
+
+
+def draw_channel_scale(img, image_width, image_height, plot_box, info):
+    ticks = info["display_ticks"]
+    if not ticks:
+        return []
+
+    plot_x0, plot_y0, plot_x1, plot_y1 = plot_box
+    channel = info["channel"]
+    color = CHANNEL_COLORS.get(channel, (80, 80, 80))
+    axis_positions = {
+        1: plot_x0 - 40,
+        2: plot_x0 - 5,
+        3: plot_x1 + 5,
+        4: plot_x1 + 40,
+    }
+    axis_x = axis_positions[channel]
+    is_left = channel in (1, 2)
+    text_angle = 90 if is_left else -90
+    draw_line(img, image_width, image_height, axis_x, plot_y0, axis_x, plot_y1, color)
+
+    overlays = []
+    for value in ticks:
+        y = value_to_pixel(info, plot_box, value)
+        if y < plot_y0 or y > plot_y1:
+            continue
+        if is_left:
+            draw_line(img, image_width, image_height, axis_x, y, axis_x + 8, y, color)
+        else:
+            draw_line(img, image_width, image_height, axis_x - 8, y, axis_x, y, color)
+        label_y = max(plot_y0 + 8, min(plot_y1 - 8, y))
+        rotation_side = "left" if is_left else "right"
+        overlays.append((axis_x, label_y, format_number(value), color, "mm", text_angle, 20, "en", rotation_side))
+    return overlays
 
 
 def plot_folder(folder):
@@ -324,23 +466,34 @@ def plot_folder(folder):
     for info in infos:
         draw_channel_trace(image, width, height, plot_box, info)
 
-    for index, info in enumerate(infos):
+    text_overlays = []
+    for info in infos:
+        text_overlays.extend(draw_channel_scale(image, width, height, plot_box, info))
+
+    info_by_channel = {info["channel"]: info for info in infos}
+    plot_x0, plot_y0, plot_x1, plot_y1 = plot_box
+    legend_slot_width = (plot_x1 - plot_x0) / 4
+    for channel in range(1, 5):
+        info = info_by_channel.get(channel)
+        if info is None:
+            continue
         channel = info["channel"]
         color = CHANNEL_COLORS.get(channel, (230, 230, 230))
-        if info["position_source"] == "POSITION":
-            placement = f"POS={format_number(info['position_div'])}DIV"
-        elif info["position_source"] == "OFFSET":
-            placement = f"OFF={format_number(info['reference_value'])}{info['unit']}"
-        else:
-            placement = "AUTO"
-        label = f"CH{channel} {format_number(info['scale_per_div'])}{info['unit']}/DIV {placement}"
-        draw_text(image, width, height, LEFT + index * 220, 18, label, color=color, scale=1)
+        label = f"CH{channel} {format_number(info['scale_per_div'])}{info['unit']}/DIV"
+        x = plot_x0 + (channel - 1) * legend_slot_width
+        text_overlays.append((x, plot_y1 + 5, label, color, None, 0, 20, "en"))
 
-    percent = infos[0]["metadata"].get("save_percent", "100")
-    draw_text(image, width, height, LEFT, TOP + PLOT_HEIGHT + 14, f"{percent}% DATA", color=(90, 96, 102), scale=1)
+    protocol_names = {
+        info["metadata"].get("protocol_name", "")
+        for info in infos
+        if info["metadata"].get("protocol_name", "")
+    }
+    if len(protocol_names) == 1:
+        protocol_name = next(iter(protocol_names))
+        text_overlays.append(((plot_x0 + plot_x1) / 2, plot_y0 - 5, protocol_name, (0, 0, 0), "mb", 0, 20, "cn"))
 
     png_path = folder / f"{folder.name}.png"
-    write_png(png_path, width, height, image)
+    write_png(png_path, width, height, image, text_overlays=text_overlays)
     return png_path
 
 

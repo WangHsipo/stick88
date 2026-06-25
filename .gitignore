@@ -1,3 +1,4 @@
 # 忽略所有 exe 文件
 *.exe
 *.json
+!release/stick88_settings.json
