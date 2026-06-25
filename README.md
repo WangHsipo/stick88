@@ -24,7 +24,7 @@ gg，一天白做（至今没有找出为什么保存的数据会出BUG......感
 YOKOGAWA的官方文档中，有详细介绍如何通过python与示波器通信并控制示波器。感兴趣的同学可以自行查看官方文档：
 
 ```
-../tmctl8020/IMB9852UB-01EN.pdf
+drivers/tmctl8020/IMB9852UB-01EN.pdf
 ```
 
 为了优化掉拔插U盘这个步骤，在全程依靠codex下编写了这个项目stick88，以直接将示波器波形保存到电脑上。
@@ -146,22 +146,16 @@ drivers\YTUSB2300.zip
 
 ### 3. 启动程序
 
-推荐双击启动：
+推荐直接双击发行版本：
 
 ```text
-run_stick88_app.bat
+release\stick88_v1.1.0.exe
 ```
 
-如果希望尽量不显示命令行窗口，可以双击：
-
-```text
-run_stick88_app_silent.vbs
-```
-
-也可以在 `stick88` 文件夹打开 PowerShell 后运行：
+开发时也可以在 `stick88` 文件夹打开 PowerShell 后运行源码：
 
 ```powershell
-python -u .\stick88_scope_app.py
+python -u .\src\stick88_scope_app.py
 ```
 
 ### 4. 保存一次数据
@@ -206,22 +200,38 @@ README.md
 
 ```text
 stick88
-├─ stick88_scope_app.py
-├─ save_dlm3024_waveform_csv.py
-├─ plot_saved_waveforms_png.py
-├─ waveform_config.py
-├─ requirements.txt
-├─ run_stick88_app.bat
-├─ run_stick88_app_silent.vbs
-├─ README_stick88.md
-├─ tmctl8020
-└─ drivers
+├─ src
+│  ├─ stick88_scope_app.py
+│  ├─ save_dlm3024_waveform_csv.py
+│  ├─ plot_saved_waveforms_png.py
+│  └─ waveform_config.py
+├─ drivers
+│  ├─ tmctl8020
+│  ├─ tmctl8020.zip
+│  └─ YTUSB2300.zip
+├─ build_specs
+│  └─ stick88_v1.1.0.spec
+├─ release
+│  ├─ stick88_v1.0.0.exe
+│  ├─ stick88_v1.0.1.exe
+│  ├─ stick88_v1.1.0.exe
+│  └─ stick88_settings.json
+└─ README.md
 ```
 
 其中：
 
-- `tmctl8020`：程序运行时直接调用的 Yokogawa TMCTL DLL 文件夹。
-- `drivers`：移植到新电脑时可能用到的安装包文件夹。
+- `src`：可维护的 Python 源码，后续版本应从这里修改。
+- `drivers/tmctl8020`：PyInstaller 打包时嵌入程序的 Yokogawa TMCTL 文件。
+- `drivers`：移植到新电脑时可能用到的安装包。
+- `build_specs`：PyInstaller 构建配置。
+- `release`：可直接运行和对外发布的版本。
+
+在 `build_specs` 目录下重新构建 v1.1.0：
+
+```powershell
+python -m PyInstaller --noconfirm --clean .\stick88_v1.1.0.spec
+```
 
 `drivers` 中当前包含：
 
